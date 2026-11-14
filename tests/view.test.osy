@@ -1,0 +1,50 @@
+// The diff on a page, read the way a person reads it: hostile text shown as the characters it is, a fold opened in
+// place, the split view and the cap. `osy test --pixels` photographs the gallery into osy-shots/ — look at them.
+
+/// Markup, a script and Osy# markup characters in a path, a hunk's section and a line are all shown as text. Had any of
+/// them been read as markup, the angle brackets and asterisks would not be on the screen.
+[Test]
+void hostile_text_is_shown_as_the_characters_it_is() {
+  Ui.Visit("/");
+  Assert.Visible("<script>alert(\"x\")</script> {name} **not bold** [[link]] @if &amp;", within: "Hostile");
+  Assert.Visible("<i>x</i>.html", within: "Hostile");
+  Assert.Visible("**still not bold** and _not italic_ <img src=x onerror=alert(1)>", within: "Hostile");
+  Assert.Visible("<b>section</b>", within: "Hostile");
+}
+
+[Test]
+void a_fold_opens_in_place_when_the_whole_text_is_given() {
+  Ui.Visit("/");
+  Assert.Hidden("line 10", within: "Expandable");
+  Ui.Click("Show 3 unchanged lines", within: "Expandable");
+  Assert.Visible("line 9", within: "Expandable");
+  Assert.Visible("line 10", within: "Expandable");
+  Assert.Visible("line 11", within: "Expandable");
+  Assert.Hidden("3 unchanged lines", within: "Expandable");
+  // Without the whole text the same fold is a count, and nothing to press.
+  Assert.Visible("3 unchanged lines", within: "Capped");
+  Assert.Hidden("Show", within: "Capped");
+}
+
+[Test]
+void every_kind_of_diff_draws() {
+  Ui.Visit("/");
+  Assert.Visible("new/name.txt", within: "Several files");
+  Assert.Visible("renamed from old/name.txt", within: "Several files");
+  Assert.Visible("Binary file: its contents are not shown.", within: "Several files");
+  Assert.Visible("no newline at end of file", within: "Several files");
+  Assert.Visible("log(total);", within: "Side by side");
+  Assert.Visible("7 more lines not shown.", within: "Capped");
+  Assert.Hidden("line 18", within: "Capped");
+}
+
+[Test]
+void the_gallery_in_light_and_dark() {
+  Ui.Viewport(1280, 1400);
+  Ui.Visit("/");
+  Ui.Shot("diff-light");
+  Ui.Click("Switch theme");
+  Ui.Shot("diff-dark");
+  // The theme switch re-draws the diff, it does not lose it.
+  Assert.Visible("src/app.txt", within: "Several files");
+}

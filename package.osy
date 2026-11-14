@@ -1,0 +1,19 @@
+// Osysharp.Diff — a unified-diff viewer in pure Osy#: no control, no JavaScript bundle, no `contract`. It reads the text
+// `git diff` (or `diff -u`) prints — one file or many — and draws it: line numbers on both sides, removed and added
+// lines marked, the changed words inside a changed line highlighted, unchanged runs folded to a count (and opened in
+// place when the caller hands over the whole old and new text), in one column or side by side.
+//
+// It declares NO capability: no egress, no secret, no native code, no script. It is drawn only from the renderer's own
+// built-in elements, every line of the diff is plain text (never markup), and all of its work happens where it is drawn.
+// Its colours, type and corners are theme tokens that default to the app's own surface, text and status tones, so an
+// app re-dresses it by shadowing a `Diff*` token.
+package Osysharp.Diff {
+  version     "1.0.0";
+  minPlatform "0.19.0";
+  summary     "a unified-diff viewer in pure Osy#: multi-file git diffs, line numbers, word highlights, folds that expand, and a split view.";
+
+  model "model/*.osy";
+  tests "tests";
+  // Its surface, ink and added/removed tints default to the UI kit's tokens, so it uses the UI kit.
+  use Osysharp.Ui;
+}

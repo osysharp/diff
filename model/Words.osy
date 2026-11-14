@@ -1,0 +1,126 @@
+namespace Osysharp.Diff;
+
+/// The most words (tokens) either line of a pair may have for its words to be compared. Comparing is a table of
+/// (words of the old line) × (words of the new line), so this bounds one pair at 200 × 200 cells.
+public int DiffWordTokenCap() => 200;
+
+/// A line cut into words: a run of letters, digits and `_` is one word, a run of spaces and tabs is one, and every
+/// other character is a word of its own — so `total=a+b` is `total` `=` `a` `+` `b`.
+public List<string> DiffTokens(string s) {
+  var words = new List<string>();
+  var i = 0;
+  while (i < s.Length) {
+    var c = s[i];
+    var j = i + 1;
+    if (char.IsLetterOrDigit(c) || c == '_') {
+      while (j < s.Length && (char.IsLetterOrDigit(s[j]) || s[j] == '_')) { j = j + 1; }
+    } else if (c == ' ' || c == '\t') {
+      while (j < s.Length && (s[j] == ' ' || s[j] == '\t')) { j = j + 1; }
+    }
+    words.Add(s.Substring(i, j - i));
+    i = j;
+  }
+  return words;
+}
+
+/// The words of a removed line and the added line it is paired with, each cut into changed and unchanged runs.
+///
+/// BOUNDED: a pair is compared only when both lines are at most `maxChars` characters and `DiffWordTokenCap()` words, so
+/// one pair costs at most 200 × 200 table cells; past either, `Skipped` is set and no runs are given (the caller says
+/// so). The common start and end are taken off before the table is built, so a one-word change in a long line costs
+/// next to nothing. A pair with no word in common gets no runs either: the whole line changed, and the line's own
+/// tint already says that.
+public DiffWordPair DiffWords(string oldText, string newText, int maxChars) {
+  var pair = new DiffWordPair();
+  if (oldText.Length > maxChars || newText.Length > maxChars) {
+    pair.Skipped = true;
+    return pair;
+  }
+  var a = DiffTokens(oldText);
+  var b = DiffTokens(newText);
+  if (a.Count > DiffWordTokenCap() || b.Count > DiffWordTokenCap()) {
+    pair.Skipped = true;
+    return pair;
+  }
+  // The same at the start and at the end: no table needed for those.
+  var head = 0;
+  while (head < a.Count && head < b.Count && a[head] == b[head]) { head = head + 1; }
+  var tail = 0;
+  while (tail < a.Count - head && tail < b.Count - head && a[a.Count - 1 - tail] == b[b.Count - 1 - tail]) { tail = tail + 1; }
+  var n = a.Count - head - tail;
+  var m = b.Count - head - tail;
+
+  // keepA[i] / keepB[j]: whether that word is common to both lines.
+  var keepA = new List<bool>();
+  var keepB = new List<bool>();
+  for (var i = 0; i < a.Count; i++) { keepA.Add(i < head || i >= a.Count - tail); }
+  for (var j = 0; j < b.Count; j++) { keepB.Add(j < head || j >= b.Count - tail); }
+
+  if (n > 0 && m > 0) {
+    // lcs[i * (m + 1) + j]: the longest common run of a[head+i..] and b[head+j..].
+    var width = m + 1;
+    var lcs = new List<int>();
+    for (var k = 0; k < (n + 1) * width; k++) { lcs.Add(0); }
+    pair.Cells = n * m;
+    for (var i = n - 1; i >= 0; i--) {
+      for (var j = m - 1; j >= 0; j--) {
+        if (a[head + i] == b[head + j]) {
+          lcs[i * width + j] = lcs[(i + 1) * width + j + 1] + 1;
+        } else {
+          var down = lcs[(i + 1) * width + j];
+          var right = lcs[i * width + j + 1];
+          lcs[i * width + j] = down >= right ? down : right;
+        }
+      }
+    }
+    var x = 0;
+    var y = 0;
+    while (x < n && y < m) {
+      if (a[head + x] == b[head + y]) {
+        keepA[head + x] = true;
+        keepB[head + y] = true;
+        x = x + 1;
+        y = y + 1;
+      } else if (lcs[(x + 1) * width + y] >= lcs[x * width + y + 1]) {
+        x = x + 1;
+      } else {
+        y = y + 1;
+      }
+    }
+  }
+
+  // Nothing but spaces in common: the whole line changed, and its tint says so.
+  var common = false;
+  for (var i = 0; i < a.Count; i++) {
+    if (keepA[i] && a[i].Trim() != "") { common = true; }
+  }
+  if (!common) {
+    return pair;
+  }
+  pair.Old = DiffSpansOf(a, keepA);
+  pair.New = DiffSpansOf(b, keepB);
+  return pair;
+}
+
+/// Words joined into runs. A space between two changed words reads as part of the change, so `a b` → `x y` is one
+/// highlighted run and not two with a gap.
+public List<DiffSpan> DiffSpansOf(List<string> words, List<bool> keep) {
+  var changed = new List<bool>();
+  for (var i = 0; i < words.Count; i++) {
+    var gap = keep[i] && words[i].Trim() == "" && i > 0 && i < words.Count - 1 && !keep[i - 1] && !keep[i + 1];
+    changed.Add(!keep[i] || gap);
+  }
+  var spans = new List<DiffSpan>();
+  var i2 = 0;
+  while (i2 < words.Count) {
+    var text = "";
+    var j = i2;
+    while (j < words.Count && changed[j] == changed[i2]) {
+      text = text + words[j];
+      j = j + 1;
+    }
+    spans.Add(new DiffSpan { Text = text, Changed = changed[i2] });
+    i2 = j;
+  }
+  return spans;
+}

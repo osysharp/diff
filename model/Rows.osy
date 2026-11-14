@@ -1,0 +1,227 @@
+namespace Osysharp.Diff;
+
+/// The most word-comparison table cells one diff spends in all (see `DiffWords`). Past it, the remaining changed lines
+/// are drawn whole and the file's note says their words were not compared.
+public int DiffWordBudget() => 1000000;
+
+/// The lines of a whole text, as a diff numbers them: a final newline does not start another line.
+public List<string> DiffTextLines(string text) {
+  var lines = new List<string>();
+  if (text == null || text == "") {
+    return lines;
+  }
+  var parts = text.Replace("\r\n", "\n").Split('\n');
+  var count = parts.Length;
+  if (text.EndsWith("\n")) {
+    count = count - 1;
+  }
+  for (var i = 0; i < count; i++) {
+    lines.Add(parts[i]);
+  }
+  return lines;
+}
+
+/// The key a fold is opened by: the file's index and the index of the hunk after it (the file's hunk count for the run
+/// after its last hunk).
+public string DiffFoldKey(int file, int hunk) => file + ":" + hunk;
+
+/// `keys` with `key` added — a new list, so a component holding it sees the change.
+public List<string> DiffWithKey(List<string> keys, string key) {
+  var next = new List<string>();
+  foreach (var k in keys) { next.Add(k); }
+  if (!next.Contains(key)) { next.Add(key); }
+  return next;
+}
+
+/// What a fold says.
+public string DiffFoldText(int count) => count == 1 ? "1 unchanged line" : count + " unchanged lines";
+
+/// A copy of a line, so the rows never write into the parsed files.
+public DiffLine DiffCopyLine(DiffLine l) {
+  return new DiffLine { Kind = l.Kind, Old = l.Old, New = l.New, Text = l.Text, NoNewline = l.NoNewline };
+}
+
+/// The rows to draw for a diff's text — `ParseDiff` then `DiffRows`.
+public List<DiffRow> DiffRowsOfText(string patch, string oldText, string newText, List<string> open, int maxLines, int wordLimit, DiffLayout layout)
+  => DiffRows(ParseDiff(patch), oldText, newText, open, maxLines, wordLimit, layout);
+
+/// The rows to draw for a diff's files, in order: each file's header and notes, then its hunks — each under its head,
+/// its removed and added lines paired for word highlights — with the unchanged lines between two hunks (and before the
+/// first) folded into one row that says how many.
+///
+/// `oldText`/`newText` are the file's whole old and new text, for a diff of ONE file; with either, a fold can be opened
+/// (its key in `open`) to show the lines it hides, and the unchanged run after the last hunk is folded too. Without
+/// them, or for a diff of several files, a fold is a count.
+///
+/// At most `maxLines` lines are drawn (lines of code, not headers); past that the rest is counted into one `More` row,
+/// "N more lines not shown". Changed words are compared only for lines of at most `wordLimit` characters.
+/// `DiffLayout.Split` pairs each removed line with the added line opposite it in `Pair` rows.
+public List<DiffRow> DiffRows(List<DiffFile> files, string oldText, string newText, List<string> open, int maxLines, int wordLimit, DiffLayout layout) {
+  var rows = new List<DiffRow>();
+  var whole = files.Count == 1 && (oldText != "" || newText != "");
+  var useOld = oldText != "";
+  var full = whole ? DiffTextLines(useOld ? oldText : newText) : new List<string>();
+  var drawn = 0;
+  var left = 0;
+  var filesLeft = 0;
+  var cells = 0;
+  for (var fi = 0; fi < files.Count; fi++) {
+    var f = files[fi];
+    if (drawn >= maxLines) {
+      filesLeft = filesLeft + 1;
+      foreach (var h in f.Hunks) { left = left + h.Lines.Count; }
+      continue;
+    }
+    // A diff of bare hunks names no file: it gets no header bar.
+    if (DiffPathOfFile(f) != "") {
+      rows.Add(new DiffRow { Kind = DiffRowKind.File, File = fi, Text = DiffPathOfFile(f), Detail = DiffChangeText(f), Added = f.Added, Removed = f.Removed });
+    }
+    foreach (var note in f.Notes) {
+      rows.Add(new DiffRow { Kind = DiffRowKind.Note, File = fi, Text = note });
+    }
+    var skipped = 0;
+    var nextOld = 1;
+    var nextNew = 1;
+    for (var hi = 0; hi <= f.Hunks.Count; hi++) {
+      // The unchanged run before this hunk — or, past the last, the run to the end of the whole text.
+      var gap = 0;
+      if (hi < f.Hunks.Count) {
+        var h = f.Hunks[hi];
+        var firstOld = h.OldCount == 0 ? h.OldStart + 1 : h.OldStart;
+        gap = firstOld - nextOld;
+      } else if (whole && f.Hunks.Count > 0) {
+        gap = full.Count - ((useOld ? nextOld : nextNew) - 1);
+      }
+      if (gap > 0 && drawn < maxLines) {
+        var key = DiffFoldKey(fi, hi);
+        var from = useOld ? nextOld : nextNew;
+        var canOpen = whole && from + gap - 1 <= full.Count;
+        if (canOpen && open.Contains(key)) {
+          for (var k = 0; k < gap; k++) {
+            if (drawn >= maxLines) {
+              left = left + 1;
+              continue;
+            }
+            rows.Add(new DiffRow { Kind = DiffRowKind.Line, File = fi, Line = new DiffLine { Kind = DiffLineKind.Context, Old = nextOld + k, New = nextNew + k, Text = full[from + k - 1] } });
+            drawn = drawn + 1;
+          }
+        } else {
+          rows.Add(new DiffRow { Kind = DiffRowKind.Fold, File = fi, Key = key, Count = gap, CanExpand = canOpen, Text = DiffFoldText(gap) });
+        }
+      }
+      if (hi == f.Hunks.Count) {
+        break;
+      }
+
+      var hunk = f.Hunks[hi];
+      if (drawn >= maxLines) {
+        left = left + hunk.Lines.Count;
+      } else {
+        rows.Add(new DiffRow { Kind = DiffRowKind.Hunk, File = fi, Text = hunk.Head, Detail = hunk.Section });
+        var lines = new List<DiffLine>();
+        foreach (var l in hunk.Lines) { lines.Add(DiffCopyLine(l)); }
+        // Pair each run of removed lines with the run of added lines right after it, one for one, and compare words —
+        // only for lines that will be drawn, and within the budget.
+        var j = 0;
+        while (j < lines.Count) {
+          if (lines[j].Kind != DiffLineKind.Removed) {
+            j = j + 1;
+            continue;
+          }
+          var r0 = j;
+          while (j < lines.Count && lines[j].Kind == DiffLineKind.Removed) { j = j + 1; }
+          var a0 = j;
+          while (j < lines.Count && lines[j].Kind == DiffLineKind.Added) { j = j + 1; }
+          var pairs = Math.Min(a0 - r0, j - a0);
+          for (var p = 0; p < pairs; p++) {
+            if (drawn + r0 + p >= maxLines) { break; }
+            var oldLine = lines[r0 + p];
+            var newLine = lines[a0 + p];
+            if (cells >= DiffWordBudget()) {
+              oldLine.WordsSkipped = true;
+              newLine.WordsSkipped = true;
+              skipped = skipped + 2;
+              continue;
+            }
+            var w = DiffWords(oldLine.Text, newLine.Text, wordLimit);
+            cells = cells + w.Cells;
+            if (w.Skipped) {
+              oldLine.WordsSkipped = true;
+              newLine.WordsSkipped = true;
+              skipped = skipped + 2;
+            } else {
+              oldLine.Spans = w.Old;
+              newLine.Spans = w.New;
+            }
+          }
+        }
+        foreach (var l in lines) {
+          if (drawn >= maxLines) {
+            left = left + 1;
+            continue;
+          }
+          rows.Add(new DiffRow { Kind = DiffRowKind.Line, File = fi, Line = l });
+          drawn = drawn + 1;
+        }
+      }
+      nextOld = hunk.OldCount == 0 ? hunk.OldStart + 1 : hunk.OldStart + hunk.OldCount;
+      nextNew = hunk.NewCount == 0 ? hunk.NewStart + 1 : hunk.NewStart + hunk.NewCount;
+    }
+    if (skipped > 0) {
+      rows.Add(new DiffRow { Kind = DiffRowKind.Note, File = fi, Count = skipped,
+                             Text = "Changed words are not marked on " + skipped + (skipped == 1 ? " line" : " lines") + " longer than " + wordLimit + " characters." });
+    }
+  }
+  if (left > 0) {
+    rows.Add(new DiffRow { Kind = DiffRowKind.More, Count = left,
+                           Text = left + (left == 1 ? " more line not shown" : " more lines not shown") + (filesLeft > 0 ? ", in " + filesLeft + (filesLeft == 1 ? " more file." : " more files.") : ".") });
+  }
+  return layout == DiffLayout.Split ? DiffSplitRows(rows) : rows;
+}
+
+/// Unified rows as side-by-side rows: an unchanged line is on both sides; a run of removed lines and the run of added
+/// lines after it are set opposite each other, one for one, the longer run's extra lines opposite nothing.
+public List<DiffRow> DiffSplitRows(List<DiffRow> rows) {
+  var paired = new List<DiffRow>();
+  var i = 0;
+  while (i < rows.Count) {
+    var r = rows[i];
+    if (r.Kind != DiffRowKind.Line) {
+      paired.Add(r);
+      i = i + 1;
+      continue;
+    }
+    if (r.Line.Kind == DiffLineKind.Context) {
+      paired.Add(new DiffRow { Kind = DiffRowKind.Pair, File = r.File, Line = r.Line, Right = r.Line });
+      i = i + 1;
+      continue;
+    }
+    var removed = new List<DiffLine>();
+    var added = new List<DiffLine>();
+    while (i < rows.Count && rows[i].Kind == DiffRowKind.Line && rows[i].Line.Kind == DiffLineKind.Removed) {
+      removed.Add(rows[i].Line);
+      i = i + 1;
+    }
+    while (i < rows.Count && rows[i].Kind == DiffRowKind.Line && rows[i].Line.Kind == DiffLineKind.Added) {
+      added.Add(rows[i].Line);
+      i = i + 1;
+    }
+    var n = Math.Max(removed.Count, added.Count);
+    for (var k = 0; k < n; k++) {
+      paired.Add(new DiffRow { Kind = DiffRowKind.Pair, File = r.File,
+                               Line = k < removed.Count ? removed[k] : null,
+                               Right = k < added.Count ? added[k] : null });
+    }
+  }
+  return paired;
+}
+
+/// How many digits the widest line number in these rows has — the width of the number columns.
+public int DiffNumberDigits(List<DiffRow> rows) {
+  var most = 1;
+  foreach (var r in rows) {
+    if (r.Line != null) { most = Math.Max(most, Math.Max(r.Line.Old, r.Line.New)); }
+    if (r.Right != null) { most = Math.Max(most, Math.Max(r.Right.Old, r.Right.New)); }
+  }
+  return most.ToString().Length;
+}

@@ -1,0 +1,192 @@
+// The diff as data: what the parser reads out of real `git diff` text, where the folds fall and what opening one shows,
+// which words are marked, what the caps cut, and how the split view pairs lines.
+using Osysharp.Diff;
+
+List<DiffRow> RowsOf(string patch, List<string> open, int maxLines) =>
+  DiffRowsOfText(patch, "", "", open, maxLines, 500, DiffLayout.Unified);
+
+List<DiffRow> Kind(List<DiffRow> rows, DiffRowKind kind) => rows.Where(r => r.Kind == kind).ToList();
+
+[Test]
+void a_git_diff_of_several_files_is_read_file_by_file() {
+  var files = ParseDiff(MultiFilePatch());
+  Assert.Equal(4, files.Count);
+
+  Assert.Equal("src/app.txt", DiffPathOfFile(files[0]));
+  Assert.Equal(DiffChange.Modified, files[0].Change);
+  Assert.Equal(1, files[0].Hunks.Count);
+  Assert.Equal("section one", files[0].Hunks[0].Section);
+  Assert.Equal(1, files[0].Added);
+  Assert.Equal(1, files[0].Removed);
+  var lines = files[0].Hunks[0].Lines;
+  Assert.Equal(4, lines.Count);
+  Assert.Equal(DiffLineKind.Context, lines[0].Kind);
+  Assert.Equal(1, lines[0].Old);
+  Assert.Equal(1, lines[0].New);
+  Assert.Equal(DiffLineKind.Removed, lines[1].Kind);
+  Assert.Equal(2, lines[1].Old);
+  Assert.Equal(0, lines[1].New);
+  Assert.Equal("let total = price + tax;", lines[1].Text);
+  Assert.Equal(DiffLineKind.Added, lines[2].Kind);
+  Assert.Equal(2, lines[2].New);
+  Assert.Equal(3, lines[3].Old);
+  Assert.Equal(3, lines[3].New);
+
+  Assert.Equal(DiffChange.Deleted, files[3].Change);
+  Assert.Equal("gone.txt", DiffPathOfFile(files[3]));
+  Assert.Equal(1, files[3].Removed);
+}
+
+[Test]
+void a_rename_keeps_both_paths_and_a_missing_final_newline_is_on_its_line() {
+  var f = ParseDiff(MultiFilePatch())[1];
+  Assert.Equal(DiffChange.Renamed, f.Change);
+  Assert.Equal("old/name.txt", f.OldPath);
+  Assert.Equal("new/name.txt", f.NewPath);
+  Assert.Equal("renamed from old/name.txt", DiffChangeText(f));
+  var lines = f.Hunks[0].Lines;
+  Assert.Equal(3, lines.Count);
+  Assert.False(lines[0].NoNewline);
+  Assert.Equal("last", lines[1].Text);
+  Assert.True(lines[1].NoNewline);
+  Assert.Equal("last line", lines[2].Text);
+  Assert.True(lines[2].NoNewline);
+}
+
+[Test]
+void a_binary_file_is_a_note_and_never_its_bytes() {
+  var f = ParseDiff(MultiFilePatch())[2];
+  Assert.True(f.Binary);
+  Assert.Equal(DiffChange.Added, f.Change);
+  Assert.Equal("assets/logo.png", DiffPathOfFile(f));
+  Assert.Equal(0, f.Hunks.Count);
+  Assert.Equal("Binary file: its contents are not shown.", f.Notes[0]);
+  var notes = Kind(RowsOf(MultiFilePatch(), new List<string>(), 1000), DiffRowKind.Note);
+  Assert.True(notes.Any(n => n.Text == "Binary file: its contents are not shown." && n.File == 2));
+}
+
+[Test]
+void a_hunk_ends_when_its_counts_are_used_not_at_a_line_that_looks_like_a_header() {
+  var files = ParseDiff(HeaderLookalikePatch());
+  Assert.Equal(1, files.Count);
+  Assert.Equal("q.sql", files[0].NewPath);
+  var lines = files[0].Hunks[0].Lines;
+  Assert.Equal(4, lines.Count);
+  Assert.Equal("-- old comment", lines[0].Text);
+  Assert.Equal(DiffLineKind.Removed, lines[0].Kind);
+  Assert.Equal("+++ not a header", lines[1].Text);
+  Assert.Equal(DiffLineKind.Removed, lines[1].Kind);
+  Assert.Equal("-- new comment", lines[2].Text);
+  Assert.Equal(DiffLineKind.Added, lines[2].Kind);
+}
+
+[Test]
+void the_unchanged_runs_between_hunks_fold_to_a_count_and_open_only_with_the_whole_text() {
+  // Without the whole text: the run before the first hunk and the run between the hunks, as counts.
+  var folds = Kind(RowsOf(TwentyPatch(), new List<string>(), 1000), DiffRowKind.Fold);
+  Assert.Equal(2, folds.Count);
+  Assert.Equal("1 unchanged line", folds[0].Text);
+  Assert.Equal("3 unchanged lines", folds[1].Text);
+  Assert.False(folds[0].CanExpand);
+  Assert.False(folds[1].CanExpand);
+
+  // With it: the run after the last hunk is folded too, and each can be opened.
+  var whole = Kind(DiffRowsOfText(TwentyPatch(), TwentyOld(), TwentyNew(), new List<string>(), 1000, 500, DiffLayout.Unified), DiffRowKind.Fold);
+  Assert.Equal(3, whole.Count);
+  Assert.Equal("2 unchanged lines", whole[2].Text);
+  Assert.True(whole.All(f => f.CanExpand));
+}
+
+[Test]
+void opening_a_fold_draws_the_lines_it_hid_with_both_numbers() {
+  var open = DiffWithKey(new List<string>(), DiffFoldKey(0, 1));
+  var rows = DiffRowsOfText(TwentyPatch(), TwentyOld(), TwentyNew(), open, 1000, 500, DiffLayout.Unified);
+  Assert.Equal(2, Kind(rows, DiffRowKind.Fold).Count);
+  var nine = rows.Where(r => r.Kind == DiffRowKind.Line && r.Line.Text == "line 9").ToList();
+  Assert.Equal(1, nine.Count);
+  Assert.Equal(9, nine[0].Line.Old);
+  Assert.Equal(9, nine[0].Line.New);
+  Assert.Equal(DiffLineKind.Context, nine[0].Line.Kind);
+  Assert.True(rows.Any(r => r.Kind == DiffRowKind.Line && r.Line.Text == "line 11" && r.Line.Old == 11));
+}
+
+[Test]
+void the_changed_words_of_a_paired_line_are_marked_and_the_rest_is_not() {
+  var w = DiffWords("let total = price + tax;", "let total = price + vat;", 500);
+  Assert.False(w.Skipped);
+  var oldChanged = w.Old.Where(s => s.Changed).ToList();
+  var newChanged = w.New.Where(s => s.Changed).ToList();
+  Assert.Equal(1, oldChanged.Count);
+  Assert.Equal("tax", oldChanged[0].Text);
+  Assert.Equal(1, newChanged.Count);
+  Assert.Equal("vat", newChanged[0].Text);
+  Assert.Equal("let total = price + tax;", string.Join("", w.Old.Select(s => s.Text)));
+
+  // In the drawn rows, the removed line and the added line after it carry the same marks.
+  var lines = Kind(RowsOf(MultiFilePatch(), new List<string>(), 1000), DiffRowKind.Line).Where(r => r.File == 0).ToList();
+  Assert.Equal("tax", lines[1].Line.Spans.Single(s => s.Changed).Text);
+  Assert.Equal("vat", lines[2].Line.Spans.Single(s => s.Changed).Text);
+
+  // Nothing but spaces in common: no marks — the whole line changed.
+  Assert.Equal(0, DiffWords("alpha beta", "gamma delta", 500).New.Count);
+}
+
+[Test]
+void the_word_comparison_is_bounded_and_says_when_it_was_skipped() {
+  var longOld = "";
+  for (var i = 0; i < 100; i++) { longOld = longOld + "word" + i + " "; }
+  var longNew = longOld + "more";
+  Assert.True(longOld.Length > 500);
+  Assert.True(DiffWords(longOld, longNew, 500).Skipped);
+  // Under the character limit but over the word cap: skipped too.
+  var commas = "";
+  for (var i = 0; i < 150; i++) { commas = commas + ",;"; }
+  Assert.True(DiffWords(commas, commas + "x", 500).Skipped);
+
+  var patch = "@@ -1 +1 @@\n-" + longOld + "\n+" + longNew + "\n";
+  var rows = RowsOf(patch, new List<string>(), 1000);
+  Assert.True(Kind(rows, DiffRowKind.Line).All(r => r.Line.Spans.Count == 0 && r.Line.WordsSkipped));
+  Assert.True(Kind(rows, DiffRowKind.Note).Any(n => n.Text == "Changed words are not marked on 2 lines longer than 500 characters."));
+}
+
+[Test]
+void the_lines_drawn_are_capped_and_the_rest_is_counted() {
+  var rows = RowsOf(TwentyPatch(), new List<string>(), 3);
+  Assert.Equal(3, Kind(rows, DiffRowKind.Line).Count);
+  var more = Kind(rows, DiffRowKind.More);
+  Assert.Equal(1, more.Count);
+  Assert.Equal(13, more[0].Count);
+  Assert.Equal("13 more lines not shown.", more[0].Text);
+  // Raising the cap draws them all.
+  Assert.Equal(16, Kind(RowsOf(TwentyPatch(), new List<string>(), 1000), DiffRowKind.Line).Count);
+  Assert.Equal(0, Kind(RowsOf(TwentyPatch(), new List<string>(), 1000), DiffRowKind.More).Count);
+  // Files past the cap are counted too.
+  var many = Kind(RowsOf(MultiFilePatch(), new List<string>(), 2), DiffRowKind.More)[0];
+  Assert.Equal("6 more lines not shown, in 3 more files.", many.Text);
+}
+
+[Test]
+void a_hostile_hunk_head_neither_allocates_nor_invents_lines() {
+  var rows = RowsOf("@@ -999999999,999999999 +999999999,999999999 @@\n a\n b\n", new List<string>(), 1000);
+  Assert.Equal(2, Kind(rows, DiffRowKind.Line).Count);
+  var fold = Kind(rows, DiffRowKind.Fold).Single();
+  Assert.Equal(999999998, fold.Count);
+  Assert.False(fold.CanExpand);
+}
+
+[Test]
+void the_split_view_sets_each_removed_line_opposite_the_added_one() {
+  var rows = DiffRowsOfText(ReplacePatch(), "", "", new List<string>(), 1000, 500, DiffLayout.Split);
+  var pairs = Kind(rows, DiffRowKind.Pair);
+  Assert.Equal(5, pairs.Count);
+  Assert.Equal("start", pairs[0].Line.Text);
+  Assert.Equal("start", pairs[0].Right.Text);
+  Assert.Equal(DiffLineKind.Removed, pairs[1].Line.Kind);
+  Assert.Equal(DiffLineKind.Added, pairs[1].Right.Kind);
+  Assert.Equal("tax", pairs[1].Line.Spans.Single(s => s.Changed).Text);
+  Assert.Equal("print(total);", pairs[2].Right.Text);
+  Assert.Null(pairs[3].Line);
+  Assert.Equal("log(total);", pairs[3].Right.Text);
+  Assert.Equal("end", pairs[4].Right.Text);
+  Assert.Equal(0, Kind(rows, DiffRowKind.Line).Count);
+}

@@ -1,0 +1,82 @@
+namespace Osysharp.Diff;
+
+/// What happened to a file.
+public enum DiffChange { Modified, Added, Deleted, Renamed, Copied }
+
+/// Which side a line of a hunk is on.
+public enum DiffLineKind { Context, Added, Removed }
+
+/// One column (old and new interleaved) or two (old on the left, new on the right).
+public enum DiffLayout { Unified, Split }
+
+/// What one drawn row is: a file's header, a note under it, a hunk's head, a line (unified) or a pair of lines (split),
+/// a folded run of unchanged lines, or the "N more lines not shown" note at the cut.
+public enum DiffRowKind { File, Note, Hunk, Line, Pair, Fold, More }
+
+/// A run of a changed line's text: `Changed` when it is a word that differs from the line it is paired with.
+public class DiffSpan {
+  public string Text = "";
+  public bool Changed = false;
+}
+
+/// One line of a hunk. `Old` and `New` are its line numbers on each side, 0 where it has none. `Spans` is the text cut
+/// into changed and unchanged runs when the line was paired with one on the other side; empty means draw `Text` whole.
+public class DiffLine {
+  public DiffLineKind Kind = DiffLineKind.Context;
+  public int Old = 0;
+  public int New = 0;
+  public string Text = "";
+  public bool NoNewline = false;
+  public List<DiffSpan> Spans = new List<DiffSpan>();
+  public bool WordsSkipped = false;
+}
+
+/// One `@@ -a,b +c,d @@ section` hunk and its lines.
+public class DiffHunk {
+  public int OldStart = 0;
+  public int OldCount = 0;
+  public int NewStart = 0;
+  public int NewCount = 0;
+  public string Head = "";
+  public string Section = "";
+  public List<DiffLine> Lines = new List<DiffLine>();
+}
+
+/// One file of a diff. `OldPath`/`NewPath` without git's `a/` and `b/`; `Notes` are what the diff says about the file
+/// that is not a line (binary, mode change, empty). `Added`/`Removed` count its lines.
+public class DiffFile {
+  public string OldPath = "";
+  public string NewPath = "";
+  public DiffChange Change = DiffChange.Modified;
+  public bool Binary = false;
+  public List<string> Notes = new List<string>();
+  public List<DiffHunk> Hunks = new List<DiffHunk>();
+  public int Added = 0;
+  public int Removed = 0;
+}
+
+/// One row to draw. `Line` is the line of a `Line` row, and the LEFT (old) side of a `Pair`; `Right` is a pair's new
+/// side. Either side of a pair may be null — a removed line with nothing added opposite it. A `Fold` row's `Count` is how
+/// many unchanged lines it hides and `Key` is what opening it names; a `More` row's `Count` is how many lines the cap
+/// left out.
+public class DiffRow {
+  public DiffRowKind Kind = DiffRowKind.Line;
+  public int File = 0;
+  public string Key = "";
+  public string Text = "";
+  public string Detail = "";
+  public int Count = 0;
+  public int Added = 0;
+  public int Removed = 0;
+  public bool CanExpand = false;
+  public DiffLine? Line = null;
+  public DiffLine? Right = null;
+}
+
+/// What a changed line was compared against, and what came of it.
+public class DiffWordPair {
+  public List<DiffSpan> Old = new List<DiffSpan>();
+  public List<DiffSpan> New = new List<DiffSpan>();
+  public bool Skipped = false;
+  public int Cells = 0;
+}

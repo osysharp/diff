@@ -1,0 +1,145 @@
+namespace Osysharp.Diff;
+
+using Osysharp.Ui;
+
+/// A unified diff, drawn: each file under a header bar (its path, what happened to it, +added −removed), each hunk under
+/// its `@@` head, every line with its old and new number in two quiet columns, removed lines and added lines on their
+/// tints with the words that changed marked inside them, and the unchanged lines between hunks folded to one row that
+/// says how many.
+///
+///   patch      the diff's text — `git diff`, `git show`, `diff -u`; one file or many.
+///   layout     `DiffLayout.Unified` (one column) or `DiffLayout.Split` (old left, new right).
+///   oldText    the file's whole old text, and
+///   newText    its whole new text — either is enough. For a diff of ONE file they make every fold a button that opens
+///              it in place, and fold the unchanged run after the last hunk too. Without them a fold is a count.
+///   maxLines   the most lines of code drawn (default 1000); the rest is one "N more lines not shown" row.
+///   wordLimit  the longest line, in characters, whose changed words are marked (default 500); longer pairs are drawn
+///              whole and a note says so.
+///   label      what the diff is called to a screen reader, and what a test's `within:` names (default "Diff").
+///
+/// Every line is plain text: a diff of HTML, of Osy# markup or of a script is shown as the characters it is.
+[Composable]
+component DiffView(string patch, DiffLayout layout = DiffLayout.Unified, string oldText = "", string newText = "",
+                   int maxLines = 1000, int wordLimit = 500, string label = "Diff") {
+  List<string> open = new List<string>();
+
+  live var rows = DiffRowsOfText(patch, oldText, newText, open, maxLines, wordLimit, layout);
+  live var digits = DiffNumberDigits(rows);
+
+  action Expand(string key) {
+    open = DiffWithKey(open, key);
+  }
+
+  string NumberCol() => (digits + 2) + "ch";
+  string UnifiedCols() => NumberCol() + " " + NumberCol() + " 2ch max-content";
+  string SplitCols() => NumberCol() + " 2ch minmax(0, 1fr) " + NumberCol() + " 2ch minmax(0, 1fr)";
+
+  string Mark(DiffLine l) => l.Kind == DiffLineKind.Added ? "+" : l.Kind == DiffLineKind.Removed ? "-" : " ";
+  string Number(int n) => n > 0 ? n.ToString() : "";
+  string Counts(DiffRow r) => "+" + r.Added + " −" + r.Removed;
+
+  render {
+    Box(overflowX: Overflow.Auto, minW: "0", bg: Colors.DiffSurface, color: Colors.DiffInk, borderW: 1,
+        border: Colors.DiffBorder, rounded: Radius.DiffCard, role: UiRole.Group, label: label) {
+      Stack(gap: 0, minW: "100%", w: layout == DiffLayout.Split ? "100%" : "max-content",
+            fontFamily: Font.DiffFace, fontSize: FontSize.DiffText, lineHeight: "1.6") {
+        if (rows.Count == 0) {
+          Text("No changes.", px: 3, py: 2, color: Colors.DiffNoteInk, fontSize: FontSize.DiffNote);
+        }
+        foreach (var r in rows) {
+          if (r.Kind == DiffRowKind.File) {
+            Row(gap: 3, px: 3, py: 1, align: Align.Center, bg: Colors.DiffFileBg, color: Colors.DiffFileInk, borderBW: 1,
+                border: Colors.DiffBorder, role: UiRole.Heading, level: 3) {
+              Text(r.Text, fontWeight: FontWeight.DiffStrong, whiteSpace: WhiteSpace.Pre);
+              if (r.Detail != "") {
+                Text(r.Detail, color: Colors.DiffNoteInk, fontSize: FontSize.DiffNote, whiteSpace: WhiteSpace.Pre);
+              }
+              Text(Counts(r), color: Colors.DiffNoteInk, fontSize: FontSize.DiffNote);
+            }
+          } else if (r.Kind == DiffRowKind.Note || r.Kind == DiffRowKind.More) {
+            Text(r.Text, px: 3, py: 1, color: Colors.DiffNoteInk, fontSize: FontSize.DiffNote);
+          } else if (r.Kind == DiffRowKind.Hunk) {
+            Row(gap: 2, px: 3, bg: Colors.DiffHunkBg, color: Colors.DiffHunkInk) {
+              Text(r.Text, whiteSpace: WhiteSpace.Pre);
+              if (r.Detail != "") {
+                Text(r.Detail, whiteSpace: WhiteSpace.Pre);
+              }
+            }
+          } else if (r.Kind == DiffRowKind.Fold) {
+            if (r.CanExpand) {
+              Pressable(onClick: () => Expand(r.Key), label: "Show " + r.Text, w: "100%", textAlign: TextAlign.Start,
+                        px: 3, bg: Colors.DiffFoldBg, color: Colors.DiffFoldInk, cursor: Cursor.Pointer) {
+                Text("⋯ Show " + r.Text, fontSize: FontSize.DiffNote);
+              }
+            } else {
+              Text("⋯ " + r.Text, px: 3, bg: Colors.DiffFoldBg, color: Colors.DiffFoldInk, fontSize: FontSize.DiffNote);
+            }
+          } else if (r.Kind == DiffRowKind.Line) {
+            Box(display: Display.Grid, cols: UnifiedCols(), gap: 0,
+                bg: r.Line.Kind == DiffLineKind.Added ? Colors.DiffAddedBg : r.Line.Kind == DiffLineKind.Removed ? Colors.DiffRemovedBg : Colors.DiffSurface) {
+              Text(Number(r.Line.Old), pr: 2, textAlign: TextAlign.Right, color: Colors.DiffGutterInk, userSelect: UserSelect.None);
+              Text(Number(r.Line.New), pr: 2, textAlign: TextAlign.Right, color: Colors.DiffGutterInk, userSelect: UserSelect.None);
+              Text(Mark(r.Line), userSelect: UserSelect.None,
+                   color: r.Line.Kind == DiffLineKind.Added ? Colors.DiffAddedMark : Colors.DiffRemovedMark);
+              DiffCode(r.Line);
+            }
+          } else if (r.Kind == DiffRowKind.Pair) {
+            Box(display: Display.Grid, cols: SplitCols(), gap: 0) {
+              if (r.Line != null) {
+                Text(Number(r.Line.Old), pr: 2, textAlign: TextAlign.Right, color: Colors.DiffGutterInk, userSelect: UserSelect.None,
+                     bg: r.Line.Kind == DiffLineKind.Removed ? Colors.DiffRemovedBg : Colors.DiffSurface);
+                Text(r.Line.Kind == DiffLineKind.Removed ? "-" : " ", userSelect: UserSelect.None, color: Colors.DiffRemovedMark,
+                     bg: r.Line.Kind == DiffLineKind.Removed ? Colors.DiffRemovedBg : Colors.DiffSurface);
+                Box(minW: "0", overflowX: Overflow.Hidden, bg: r.Line.Kind == DiffLineKind.Removed ? Colors.DiffRemovedBg : Colors.DiffSurface) {
+                  DiffCode(r.Line);
+                }
+              } else {
+                Box(bg: Colors.DiffEmptyBg);
+                Box(bg: Colors.DiffEmptyBg);
+                Box(bg: Colors.DiffEmptyBg);
+              }
+              if (r.Right != null) {
+                Text(Number(r.Right.New), pr: 2, textAlign: TextAlign.Right, color: Colors.DiffGutterInk, userSelect: UserSelect.None,
+                     bg: r.Right.Kind == DiffLineKind.Added ? Colors.DiffAddedBg : Colors.DiffSurface);
+                Text(r.Right.Kind == DiffLineKind.Added ? "+" : " ", userSelect: UserSelect.None, color: Colors.DiffAddedMark,
+                     bg: r.Right.Kind == DiffLineKind.Added ? Colors.DiffAddedBg : Colors.DiffSurface);
+                Box(minW: "0", overflowX: Overflow.Hidden, bg: r.Right.Kind == DiffLineKind.Added ? Colors.DiffAddedBg : Colors.DiffSurface) {
+                  DiffCode(r.Right);
+                }
+              } else {
+                Box(bg: Colors.DiffEmptyBg);
+                Box(bg: Colors.DiffEmptyBg);
+                Box(bg: Colors.DiffEmptyBg);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// One line's text: whole, or in runs with the changed words marked — and a quiet note when the file has no newline
+/// after it. Always plain text.
+[Composable]
+component DiffCode(DiffLine line) {
+  render {
+    Box(whiteSpace: WhiteSpace.Pre, pr: 3) {
+      if (line.Spans.Count == 0) {
+        Text(line.Text);
+      } else {
+        foreach (var s in line.Spans) {
+          if (s.Changed) {
+            Text(s.Text, rounded: "2px",
+                 bg: line.Kind == DiffLineKind.Added ? Colors.DiffAddedWord : Colors.DiffRemovedWord);
+          } else {
+            Text(s.Text);
+          }
+        }
+      }
+      if (line.NoNewline) {
+        Text("  ⊘ no newline at end of file", color: Colors.DiffNoteInk, fontSize: FontSize.DiffNote, userSelect: UserSelect.None);
+      }
+    }
+  }
+}

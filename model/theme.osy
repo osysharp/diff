@@ -1,0 +1,53 @@
+// Diff@1: the diff viewer's design tokens (`using Osysharp.Diff;`).
+namespace Osysharp.Diff;
+
+// A diff FOLLOWS THE THEME IT IS DRAWN IN. Its card, ink and gutters are the theme's own surface, text and muted
+// tones and its +/- marks the theme's success and danger ink, so a diff in any app looks like part of the page it sits
+// on, in light and dark, without the app writing a line for it.
+//
+// Every token is the app's to shadow — `theme App { Colors { DiffAddedBg = "#…"; DiffRemovedWord = Colors.Danger; } }`
+// — and the app's value wins wherever the kit reads it. They are named `Diff*` rather than read as `Surface` or
+// `SuccessTint` directly so an app can re-dress the diff alone without touching every other card or badge.
+theme Diff {
+  Colors {
+    // The card, its hairline and its words.
+    DiffSurface   = Colors.Surface;
+    DiffBorder    = Colors.CardLine;
+    DiffInk       = Colors.OnSurface;
+    // The two line-number columns and the +/− column: quiet, so the eye reads the code first.
+    DiffGutterInk = Colors.TextMuted;
+    // A file's header bar (its path, and what happened to it).
+    DiffFileBg    = Colors.Muted;
+    DiffFileInk   = Colors.OnSurface;
+    // A hunk's `@@ … @@` line, and a folded run of unchanged lines (a pressable bar when it can be opened).
+    DiffHunkBg    = Colors.Sunken;
+    DiffHunkInk   = Colors.TextMuted;
+    DiffFoldBg    = Colors.Sunken;
+    DiffFoldInk   = Colors.TextMuted;
+    // A note: a binary file, a mode change, "no newline at end of file", words not compared, lines not shown.
+    DiffNoteInk   = Colors.TextMuted;
+    // An added line, and the words inside it that changed; a removed line, and its changed words. These four are the
+    // kit's own quiet tints rather than the theme's status tints: a status tint is made to carry a few words on a badge,
+    // and a whole page of lines on it (deep red and green in dark mode) out-shouts the code. The word tint is one clear
+    // step stronger than its line's, in both modes, so a changed word still reads as one inside its line.
+    DiffAddedBg     = Modes.Of(light: "#E7F6EB", dark: "#132A1D");
+    DiffAddedWord   = Modes.Of(light: "#ABE6BC", dark: "#22603A");
+    DiffRemovedBg   = Modes.Of(light: "#FCECEB", dark: "#2E1517");
+    DiffRemovedWord = Modes.Of(light: "#F6C2BE", dark: "#76292D");
+    // The `+` and `-` before a line: the theme's own success and danger ink.
+    DiffAddedMark   = Colors.SuccessInk;
+    DiffRemovedMark = Colors.DangerInk;
+    // The empty half of a side-by-side row (a line added with nothing removed opposite it).
+    DiffEmptyBg     = Colors.Sunken;
+  }
+  // The diff is set in the theme's monospace; notes one size down.
+  Font {
+    DiffFace = Font.Mono;
+  }
+  FontSize {
+    DiffText = FontSize.Label;
+    DiffNote = FontSize.Caption;
+  }
+  FontWeight { DiffStrong = FontWeight.Semibold; }
+  Radius { DiffCard = Radius.Md; }
+}

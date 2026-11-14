@@ -1,0 +1,269 @@
+namespace Osysharp.Diff;
+
+/// The files of a unified diff — what `git diff`, `git show` or `diff -u` prints. One file or many; `diff --git` headers,
+/// `---`/`+++` headers, `@@` hunks, `\ No newline at end of file`, renames and copies, mode changes, new and deleted
+/// files, and binary files (kept as a note: their bytes are never shown). Text outside a file — a commit message, an
+/// `index` line — is passed over.
+///
+/// A hunk ends when the line counts its head promised are used up, not at the first line that looks like a header, so a
+/// removed line that reads `-- x` (`--- x` in the diff) stays a removed line. The work is one pass over the text: the
+/// counts in a hunk's head are only ever counted DOWN, never used to size anything, so a hostile head cannot make it
+/// allocate.
+public List<DiffFile> ParseDiff(string patch) {
+  var files = new List<DiffFile>();
+  if (patch == null || patch == "") {
+    return files;
+  }
+  var lines = patch.Replace("\r\n", "\n").Split('\n');
+  // A diff ends with a newline, which does not start another (empty, unchanged) line.
+  var count = lines.Length;
+  if (count > 0 && lines[count - 1] == "") {
+    count = count - 1;
+  }
+  DiffFile? file = null;
+  DiffHunk? hunk = null;
+  var oldLeft = 0;
+  var newLeft = 0;
+  var oldAt = 0;
+  var newAt = 0;
+  var inBinaryPatch = false;
+  var sawHeaders = false;
+  var oldMode = "";
+  var i = 0;
+  while (i < count) {
+    var raw = lines[i];
+    i = i + 1;
+
+    // `\ No newline at end of file` belongs to the line before it, whichever side that line is on.
+    if (raw.StartsWith("\\") && hunk != null) {
+      if (hunk.Lines.Count > 0) {
+        hunk.Lines[hunk.Lines.Count - 1].NoNewline = true;
+      }
+      continue;
+    }
+
+    if (hunk != null && (oldLeft > 0 || newLeft > 0)) {
+      if (raw.StartsWith("+") && newLeft > 0) {
+        hunk.Lines.Add(new DiffLine { Kind = DiffLineKind.Added, New = newAt, Text = raw.Substring(1) });
+        newAt = newAt + 1;
+        newLeft = newLeft - 1;
+        file.Added = file.Added + 1;
+        continue;
+      }
+      if (raw.StartsWith("-") && oldLeft > 0) {
+        hunk.Lines.Add(new DiffLine { Kind = DiffLineKind.Removed, Old = oldAt, Text = raw.Substring(1) });
+        oldAt = oldAt + 1;
+        oldLeft = oldLeft - 1;
+        file.Removed = file.Removed + 1;
+        continue;
+      }
+      // An unchanged line — or an empty one, which some tools print for an unchanged empty line with its space trimmed.
+      if ((raw.StartsWith(" ") || raw == "") && oldLeft > 0 && newLeft > 0) {
+        hunk.Lines.Add(new DiffLine { Kind = DiffLineKind.Context, Old = oldAt, New = newAt, Text = raw == "" ? "" : raw.Substring(1) });
+        oldAt = oldAt + 1;
+        newAt = newAt + 1;
+        oldLeft = oldLeft - 1;
+        newLeft = newLeft - 1;
+        continue;
+      }
+      // Anything else ends the hunk early (a diff cut short); it is read as a header below.
+      oldLeft = 0;
+      newLeft = 0;
+    }
+
+    if (raw.StartsWith("diff --git ")) {
+      file = new DiffFile();
+      files.Add(file);
+      hunk = null;
+      inBinaryPatch = false;
+      sawHeaders = false;
+      oldMode = "";
+      var rest = raw.Substring(11);
+      var cut = rest.IndexOf(" b/");
+      if (cut < 0) {
+        cut = rest.IndexOf(" \"b/");
+      }
+      if (cut > 0) {
+        file.OldPath = DiffPathOf(rest.Substring(0, cut));
+        file.NewPath = DiffPathOf(rest.Substring(cut + 1));
+      } else {
+        file.OldPath = DiffPathOf(rest);
+        file.NewPath = file.OldPath;
+      }
+      continue;
+    }
+    if (inBinaryPatch) {
+      continue;
+    }
+
+    if (raw.StartsWith("@@ ")) {
+      if (file == null) {
+        file = new DiffFile();
+        files.Add(file);
+      }
+      var end = raw.IndexOf(" @@", 2);
+      if (end < 0) {
+        hunk = null;
+        continue;
+      }
+      var ranges = raw.Substring(3, end - 3).Split(' ');
+      if (ranges.Length < 2 || !ranges[0].StartsWith("-") || !ranges[1].StartsWith("+")) {
+        hunk = null;
+        continue;
+      }
+      hunk = new DiffHunk { Head = raw.Substring(0, end + 3), Section = end + 3 < raw.Length ? raw.Substring(end + 3).Trim() : "" };
+      hunk.OldStart = DiffRangeStart(ranges[0]);
+      hunk.OldCount = DiffRangeCount(ranges[0]);
+      hunk.NewStart = DiffRangeStart(ranges[1]);
+      hunk.NewCount = DiffRangeCount(ranges[1]);
+      file.Hunks.Add(hunk);
+      oldAt = hunk.OldStart;
+      newAt = hunk.NewStart;
+      oldLeft = hunk.OldCount;
+      newLeft = hunk.NewCount;
+      continue;
+    }
+
+    // `--- old` then `+++ new`. Without a `diff --git` line before it (`diff -u`), the pair is what starts a file.
+    if (raw.StartsWith("--- ") && i < count && lines[i].StartsWith("+++ ")) {
+      if (file == null || file.Hunks.Count > 0 || sawHeaders) {
+        file = new DiffFile();
+        files.Add(file);
+        oldMode = "";
+      }
+      sawHeaders = true;
+      hunk = null;
+      var oldName = DiffHeaderPath(raw.Substring(4));
+      var newName = DiffHeaderPath(lines[i].Substring(4));
+      i = i + 1;
+      if (oldName == "/dev/null") {
+        file.Change = DiffChange.Added;
+      } else if (file.Change != DiffChange.Renamed && file.Change != DiffChange.Copied) {
+        file.OldPath = oldName;
+      }
+      if (newName == "/dev/null") {
+        file.Change = DiffChange.Deleted;
+      } else if (file.Change != DiffChange.Renamed && file.Change != DiffChange.Copied) {
+        file.NewPath = newName;
+      }
+      if (file.OldPath == "") { file.OldPath = file.NewPath; }
+      if (file.NewPath == "") { file.NewPath = file.OldPath; }
+      continue;
+    }
+
+    if (raw.StartsWith("Binary files ") && raw.EndsWith(" differ")) {
+      if (file == null) {
+        file = new DiffFile();
+        files.Add(file);
+        var names = raw.Substring(13, raw.Length - 13 - 7);
+        var and = names.IndexOf(" and ");
+        if (and > 0) {
+          file.OldPath = DiffHeaderPath(names.Substring(0, and));
+          file.NewPath = DiffHeaderPath(names.Substring(and + 5));
+          if (file.OldPath == "/dev/null") { file.Change = DiffChange.Added; file.OldPath = file.NewPath; }
+          if (file.NewPath == "/dev/null") { file.Change = DiffChange.Deleted; file.NewPath = file.OldPath; }
+        }
+      }
+      file.Binary = true;
+      continue;
+    }
+    if (file == null) {
+      continue;
+    }
+    if (raw.StartsWith("GIT binary patch")) {
+      file.Binary = true;
+      inBinaryPatch = true;
+      continue;
+    }
+    if (raw.StartsWith("new file mode")) {
+      file.Change = DiffChange.Added;
+    } else if (raw.StartsWith("deleted file mode")) {
+      file.Change = DiffChange.Deleted;
+    } else if (raw.StartsWith("rename from ")) {
+      file.Change = DiffChange.Renamed;
+      file.OldPath = DiffPathOf(raw.Substring(12));
+    } else if (raw.StartsWith("rename to ")) {
+      file.Change = DiffChange.Renamed;
+      file.NewPath = DiffPathOf(raw.Substring(10));
+    } else if (raw.StartsWith("copy from ")) {
+      file.Change = DiffChange.Copied;
+      file.OldPath = DiffPathOf(raw.Substring(10));
+    } else if (raw.StartsWith("copy to ")) {
+      file.Change = DiffChange.Copied;
+      file.NewPath = DiffPathOf(raw.Substring(8));
+    } else if (raw.StartsWith("old mode ")) {
+      oldMode = raw.Substring(9).Trim();
+    } else if (raw.StartsWith("new mode ")) {
+      file.Notes.Add("Mode changed from " + oldMode + " to " + raw.Substring(9).Trim() + ".");
+    }
+  }
+  foreach (var f in files) {
+    if (f.Binary) {
+      f.Notes.Add("Binary file: its contents are not shown.");
+    } else if (f.Hunks.Count == 0 && f.Notes.Count == 0) {
+      f.Notes.Add(f.Change == DiffChange.Renamed ? "Renamed; the contents did not change."
+                : f.Change == DiffChange.Copied ? "Copied; the contents did not change."
+                : f.Change == DiffChange.Added ? "A new, empty file."
+                : f.Change == DiffChange.Deleted ? "An empty file, deleted."
+                : "No lines changed.");
+    }
+  }
+  return files;
+}
+
+/// The path a file is shown under: its new path, or its old one when it was deleted.
+public string DiffPathOfFile(DiffFile f) => f.Change == DiffChange.Deleted || f.NewPath == "" ? f.OldPath : f.NewPath;
+
+/// What a file's header says happened to it, in words: "renamed from x", "new file", …; empty for a plain change.
+public string DiffChangeText(DiffFile f) {
+  if (f.Change == DiffChange.Added) { return "new file"; }
+  if (f.Change == DiffChange.Deleted) { return "deleted"; }
+  if (f.Change == DiffChange.Renamed) { return "renamed from " + f.OldPath; }
+  if (f.Change == DiffChange.Copied) { return "copied from " + f.OldPath; }
+  return "";
+}
+
+/// A path as git writes it in a `diff --git` line: quotes taken off, and its `a/` or `b/` prefix.
+public string DiffPathOf(string text) {
+  var p = text.Trim();
+  if (p.Length >= 2 && p.StartsWith("\"") && p.EndsWith("\"")) {
+    p = p.Substring(1, p.Length - 2);
+  }
+  if (p.StartsWith("a/") || p.StartsWith("b/")) {
+    p = p.Substring(2);
+  }
+  return p;
+}
+
+/// A path as a `---`/`+++` line writes it: a tab and the timestamp `diff -u` adds after it are taken off.
+public string DiffHeaderPath(string text) {
+  var p = text;
+  var tab = p.IndexOf('\t');
+  if (tab >= 0) {
+    p = p.Substring(0, tab);
+  }
+  p = p.Trim();
+  if (p == "/dev/null") {
+    return p;
+  }
+  return DiffPathOf(p);
+}
+
+/// The start of a hunk range (`-12,4` → 12); 0 when it is not a number.
+public int DiffRangeStart(string range) {
+  var digits = range.Substring(1);
+  var comma = digits.IndexOf(',');
+  if (comma >= 0) {
+    digits = digits.Substring(0, comma);
+  }
+  return int.TryParse(digits, out var n) && n > 0 ? n : 0;
+}
+
+/// The count of a hunk range (`-12,4` → 4); 1 when it is left out, as the format says.
+public int DiffRangeCount(string range) {
+  var comma = range.IndexOf(',');
+  if (comma < 0) {
+    return 1;
+  }
+  return int.TryParse(range.Substring(comma + 1), out var n) && n > 0 ? n : 0;
+}
