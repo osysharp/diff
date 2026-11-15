@@ -150,6 +150,18 @@ void the_word_comparison_is_bounded_and_says_when_it_was_skipped() {
 }
 
 [Test]
+void a_pair_skipped_for_its_words_is_not_blamed_on_its_length() {
+  var commas = "";
+  for (var i = 0; i < 150; i++) { commas = commas + ",;"; }
+  Assert.True(commas.Length < 500);
+  var patch = "@@ -1 +1 @@\n-" + commas + "\n+" + commas + "x\n";
+  var rows = RowsOf(patch, new List<string>(), 1000);
+  var notes = Kind(rows, DiffRowKind.Note);
+  Assert.False(notes.Any(n => n.Text.Contains("longer than")));
+  Assert.True(notes.Any(n => n.Text == "Changed words are not marked on 2 lines: they have too many words to compare."));
+}
+
+[Test]
 void the_lines_drawn_are_capped_and_the_rest_is_counted() {
   var rows = RowsOf(TwentyPatch(), new List<string>(), 3);
   Assert.Equal(3, Kind(rows, DiffRowKind.Line).Count);

@@ -79,7 +79,10 @@ public List<DiffRow> DiffRows(List<DiffFile> files, string oldText, string newTe
     foreach (var note in f.Notes) {
       rows.Add(new DiffRow { Kind = DiffRowKind.Note, File = fi, Text = note });
     }
+    // Pairs whose words were not compared, by why: a line past the character limit, or too many words (a line past
+    // the word cap, or the diff's cell budget spent). The note names the reason that holds.
     var skipped = 0;
+    var tooManyWords = 0;
     var nextOld = 1;
     var nextNew = 1;
     for (var hi = 0; hi <= f.Hunks.Count; hi++) {
@@ -140,7 +143,7 @@ public List<DiffRow> DiffRows(List<DiffFile> files, string oldText, string newTe
             if (cells >= DiffWordBudget()) {
               oldLine.WordsSkipped = true;
               newLine.WordsSkipped = true;
-              skipped = skipped + 2;
+              tooManyWords = tooManyWords + 2;
               continue;
             }
             var w = DiffWords(oldLine.Text, newLine.Text, wordLimit);
@@ -148,7 +151,11 @@ public List<DiffRow> DiffRows(List<DiffFile> files, string oldText, string newTe
             if (w.Skipped) {
               oldLine.WordsSkipped = true;
               newLine.WordsSkipped = true;
-              skipped = skipped + 2;
+              if (oldLine.Text.Length > wordLimit || newLine.Text.Length > wordLimit) {
+                skipped = skipped + 2;
+              } else {
+                tooManyWords = tooManyWords + 2;
+              }
             } else {
               oldLine.Spans = w.Old;
               newLine.Spans = w.New;
@@ -170,6 +177,10 @@ public List<DiffRow> DiffRows(List<DiffFile> files, string oldText, string newTe
     if (skipped > 0) {
       rows.Add(new DiffRow { Kind = DiffRowKind.Note, File = fi, Count = skipped,
                              Text = "Changed words are not marked on " + skipped + (skipped == 1 ? " line" : " lines") + " longer than " + wordLimit + " characters." });
+    }
+    if (tooManyWords > 0) {
+      rows.Add(new DiffRow { Kind = DiffRowKind.Note, File = fi, Count = tooManyWords,
+                             Text = "Changed words are not marked on " + tooManyWords + (tooManyWords == 1 ? " line" : " lines") + ": they have too many words to compare." });
     }
   }
   if (left > 0) {

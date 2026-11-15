@@ -8,7 +8,7 @@
 // Its colours, type and corners are theme tokens that default to the app's own surface, text and status tones, so an
 // app re-dresses it by shadowing a `Diff*` token.
 package Osysharp.Diff {
-  version     "1.0.0";
+  version     "1.0.1";
   minPlatform "0.19.0";
   summary     "a unified-diff viewer in pure Osy#: multi-file git diffs, line numbers, word highlights, folds that expand, and a split view.";
 

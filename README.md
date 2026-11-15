@@ -43,7 +43,7 @@ var files = ParseDiff(change.Patch);                                 // or read 
   `{name}` and `[[link]]` included.
 - **Bounded work.** One pass to parse; a hunk's head is only counted down, never used to size anything. Changed words
   are compared for lines of at most `wordLimit` characters and 200 words, and at most a million comparison cells per
-  diff — a pair past that is drawn whole, with a note saying how many lines were not compared.
+  diff — a pair past that is drawn whole, with a note saying how many lines were not compared, and why.
 - **A cap on what is drawn**, with the rest counted, files included.
 - **Its theme is yours.** Every colour, the face and the sizes are `Diff*` tokens defaulting to your theme's surface, text and
   status ink; shadow any of them (`Colors { DiffAddedBg = Colors.SuccessTint; }`).
